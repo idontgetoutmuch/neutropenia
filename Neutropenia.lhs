@@ -53,6 +53,7 @@ and the parameters we wish to estimate are $k_a$, $Q$, $CL$, $V_{\mathrm{central
 
 > import Control.Monad.Writer
 > import Control.Monad.Loops
+> import Numeric.IEEE
 
 > neutObs :: R s Double
 > neutObs = R.dynSEXP <$> [r| nData$neutObs |]
@@ -112,6 +113,10 @@ central compartment ($h^{-1}$)
 >                    , v1 :: Volume Double
 >                    , q  :: Quantity (DVolume / DTime) Double
 >                    , v2 :: Volume Double
+>                    , circ0 :: CellDensity Double
+>                    , mtt :: Time Double
+>                    , alpha :: Quantity (DVolume / DMass) Double
+>                    , gamma :: Quantity DOne Double
 >                    }
 
 > parms :: IO Parms
@@ -137,20 +142,59 @@ central compartment ($h^{-1}$)
 >                  , v1 = (ps!!2) *~ litre
 >                  , q  = (ps!!1) *~ (litre / hour)
 >                  , v2 = (ps!!3) *~ litre
+>                  , circ0 = (ps!!8) *~ (mole / kilo gram)
+>                  , mtt = (ps!!7) *~ hour
+>                  , alpha = (ps!!6) *~ (litre / (kilo gram))
+>                  , gamma = (ps!!9) *~ one
 >                  }
 
+> type CellDensity = Quantity (DAmountOfSubstance / DMass)
+
 > dxdt :: Parms -> Double -> Vector Double -> Vector Double
-> dxdt parms t x = undefined
+> dxdt params _t x = vector $ gcsfNoUnit ++ neutNoUnit
 >   where
->     foo :: [Double]
->     foo = [ -ka' P.* (x!0)
->           ,  ka' P.* (x!0) P.- (k10 P.+ k12) P.* (x!1) P.+ k21 P.* (x!2)
->           ]
->     ka', k10, k12 :: Double
->     ka' = ka parms /~ (one / hour)
->     k10 = (cl parms / v1 parms) /~ (one / hour)
->     k12 = (q parms / v1 parms) /~ (one / hour)
->     k21 = (q parms / v2 parms) /~ (one / hour)
+
+The first 3 variables are the masses of the drug in milligrams in the
+3 compartments.
+
+>     y :: [Mass Double]
+>     y = map (*~ (milli gram)) (toList x)
+
+The second 5 variables are those described in @Friberg.
+
+>     y' :: [CellDensity Double]
+>     y' = map (*~ (mole / kilo gram)) (toList x)
+
+>     ka' = ka params
+>     k10 = cl params / v1 params
+>     k12 = q params / v1 params
+>     k21 = q params / v2 params
+
+>     gcsfNoUnit = map (/~ ((milli gram / hour))) gcsf
+>     gcsf = [  (negate ka') * (y!!0)
+>            ,  ka' * (y!!0) - (k10 + k12) * (y!!1) + k21 * (y!!2)
+>            ,  k12 * (y!!1) - k21 * (y!!2)
+>            ]
+
+>     conc = (y!!1) / (v1 params) -- NB the central compartment not the gut
+>     ktr = (4 *~ one) / (mtt params)
+>     prol = y'!!3 + (circ0 params)
+>     transit1 = y'!!4 + (circ0 params)
+>     transit2 = y'!!5 + (circ0 params)
+>     transit3 = y'!!6 + (circ0 params)
+>     circ = max (minNormal *~ (mole / kilo gram)) (y'!!7 + (circ0 params))
+>     eDrug :: Quantity DOne Double
+>     eDrug = (alpha params) * conc
+>     neutNoUnit :: [Double]
+>     neutNoUnit =  map (/~ (mole / hour / (kilo gram))) neut
+>     neut :: [Quantity (DAmountOfSubstance / DMass / DTime) Double]
+>     neut = [ ktr * prol *
+>              (((1.0 *~ one) - eDrug) * ((circ0 params / circ) ** (gamma params)) - (1.0 *~ one))
+>            , ktr * (prol - transit1)
+>            , ktr * (transit1 - transit2)
+>            , ktr * (transit2 - transit3)
+>            , ktr * (transit3 - circ)
+>            ]
 
 References
 ==========
